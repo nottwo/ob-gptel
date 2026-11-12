@@ -24,7 +24,10 @@
 ;; (\"org\" or \"markdown\"), :dry-run (inspect payload), and :entry
 ;; (when t, prepend the prose preceding the block in its enclosing org
 ;; entry to the body — handy for \"summarize the above\" style queries).
-
+;; Tool use example:
+;;   #+begin_src gptel :tools "search_web read_url"
+;;   What are the latest Emacs features?
+;;   #+end_src
 ;;; Code:
 
 (require 'ob)
@@ -61,8 +64,8 @@
     (:prompt . nil)
     (:session . nil)
     (:entry . nil)
-    (:format . "org"))
-  "Default header arguments for gptel source blocks.")
+    (:format . "org")
+    (:tools . nil))  "Default header arguments for gptel source blocks.")
 
 (defun ob-gptel-find-prompt (prompt &optional system-message)
   "Given a PROMPT identifier, find the block/result pair it names.
@@ -89,36 +92,49 @@ and the result in the ASSISTANT role."
 (defun ob-gptel--all-source-blocks (session)
   "Return all Source blocks before point with `:session' set to SESSION."
   (org-element-map
-   (save-restriction
-     (narrow-to-region (point-min) (point))
-     (org-element-parse-buffer))
-   '(src-block fixed-width)
-   (lambda (element)
-     (cond ((eq (org-element-type element) 'src-block)
-            (let ((start
-                   (org-element-property :begin element))
-                  (language
-                   (when (org-element-property :language element)
-                     (string-trim (org-element-property :language element))))
-                  (parameters
-                   (when (org-element-property :parameters element)
-                     (org-babel-parse-header-arguments
-                      (string-trim (org-element-property :parameters element))))))
-              (and (<= start (point))
-                   (equal session (cdr (assq :session parameters)))
-                   (list :start start
-                         :language language
-                         :parameters parameters
-                         :body
-                         (when (org-element-property :value element)
-                           (string-trim (org-element-property :value element)))
-                         :result
-                         (save-excursion
-                           (save-restriction
-                             (goto-char (org-element-property :begin element))
-                             (when (org-babel-where-is-src-block-result)
-                               (goto-char (org-babel-where-is-src-block-result))
-                               (org-babel-read-result))))))))))))
+      (save-restriction
+        (narrow-to-region (point-min) (point))
+        (org-element-parse-buffer))
+      '(src-block fixed-width)
+    (lambda (element)
+      (cond ((eq (org-element-type element) 'src-block)
+             (let ((start
+                    (org-element-property :begin element))
+                   (language
+                    (when (org-element-property :language element)
+                      (string-trim (org-element-property :language element))))
+                   (parameters
+                    (when (org-element-property :parameters element)
+                      (org-babel-parse-header-arguments
+                       (string-trim (org-element-property :parameters element))))))
+               (and (<= start (point))
+                    (equal session (cdr (assq :session parameters)))
+                    (list :start start
+                          :language language
+                          :parameters parameters
+                          :body
+                          (when (org-element-property :value element)
+                            (string-trim (org-element-property :value element)))
+                          :result
+                          (save-excursion
+                            (save-restriction
+                              (goto-char (org-element-property :begin element))
+                              (when (org-babel-where-is-src-block-result)
+                                (goto-char (org-babel-where-is-src-block-result))
+                                (org-babel-read-result))))))))))))
+
+(defun ob-gptel-find-session-param (param params session)
+  "Look for PARAM in PARAMS and return it if found.
+Otherwise look for the latest defined PARAM in the blocks in SESSION. Return nil
+if not found."
+  (let ((override (cdr (assoc param params)))
+        (found-param nil)
+        (blocks (ob-gptel--all-source-blocks session)))
+    (if override override
+      (dolist (block blocks)
+        (when-let* ((val (cdr (assoc param (plist-get block :parameters)))))
+          (setq found-param val)))
+      found-param)))
 
 (defun ob-gptel-find-session (session &optional system-message)
   "Given a SESSION identifier, find the blocks/result pairs it names.
@@ -203,20 +219,16 @@ The result is trimmed; returns nil when the region is empty."
   "Return non-nil when the `pending' library is loadable."
   (featurep 'pending))
 
-(defun ob-gptel--legacy-replace (uuid buffer text)
-  "In BUFFER, find UUID and atomically replace it with TEXT."
+(defun ob-gptel--legacy-replace (buffer text block-start result-params)
+  "In BUFFER, insert TEXT at BLOCK-START as an Org Babel result
+   using RESULT-PARAMS."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (save-excursion
         (save-restriction
           (widen)
-          (goto-char (point-min))
-          (when (search-forward uuid nil t)
-            (let ((s (match-beginning 0))
-                  (e (match-end 0)))
-              (goto-char s)
-              (delete-region s e)
-              (insert text))))))))
+          (goto-char block-start)
+          (org-babel-insert-result text result-params))))))
 
 (defun ob-gptel--format-response (response format)
   "Trim RESPONSE and convert markdown->org if FORMAT equals \"org\"."
@@ -257,11 +269,12 @@ found."
               (setcar cell token)
               token)))))))
 
-(defun ob-gptel--make-callback (uuid buffer format cell)
+(defun ob-gptel--make-callback (buffer format cell block-start result-params)
   "Return a gptel callback closure for an async block.
 The callback uses the pending token in (car CELL) when active;
 otherwise it falls back to UUID-based search/replace.
-UUID, BUFFER, and FORMAT are the values captured at request time."
+BUFFER, FORMAT, BLOCK-START and RESULT-PARAMS are the values captured at request
+time."
   (lambda (response info)
     (let ((token (car cell)))
       (cond
@@ -270,13 +283,15 @@ UUID, BUFFER, and FORMAT are the values captured at request time."
           (if (and token
                    (ob-gptel--use-pending-p)
                    (pending-active-p token))
-              (pending-finish token text)
-            (ob-gptel--legacy-replace uuid buffer text))))
+              (pending-finish token (lambda () (ob-gptel--legacy-replace buffer text block-start result-params)))
+            (ob-gptel--legacy-replace buffer text block-start result-params))))
        ;; gptel signals abort by calling the callback with the
        ;; symbol `abort'.  Leave the placeholder for `gptel-abort'
        ;; to clean up via the on-cancel path; do nothing here.
        ((eq response 'abort) nil)
-       (t
+       ;; gptel returns a nil response when the response is empty
+       ;; or there is an error.
+       ((eq response nil)
         (let ((reason (or (and (listp info) (plist-get info :error))
                           "gptel error")))
           (if (and token
@@ -284,27 +299,31 @@ UUID, BUFFER, and FORMAT are the values captured at request time."
                    (pending-active-p token))
               (pending-reject token (format "%s" reason))
             (ob-gptel--legacy-replace
-             uuid buffer
-             (format "(gptel error: %s)" reason)))))))))
+             buffer
+             (format "(gptel error: %s)" reason) block-start result-params))))))))
 
 (defun org-babel-execute:gptel (body params)
   "Execute a gptel source block with BODY and PARAMS.
 This function sends the BODY text to GPTel and returns the response."
-  (let* ((model (cdr (assoc :model params)))
-         (temperature (cdr (assoc :temperature params)))
-         (max-tokens (cdr (assoc :max-tokens params)))
-         (system-message (cdr (assoc :system params)))
-         (backend-name (cdr (assoc :backend params)))
-         (prompt (cdr (assoc :prompt params)))
-         (session (cdr (assoc :session params)))
-         (preset (cdr (assoc :preset params)))
-         (context (cdr (assoc :context params)))
-         (format (cdr (assoc :format params)))
+  (let* ((buffer (current-buffer))
          (dry-run (cdr (assoc :dry-run params)))
-         (entry (cdr (assoc :entry params)))
-         (buffer (current-buffer))
          (dry-run (and dry-run (not (member dry-run '("no" "nil" "false")))))
+         (entry (cdr (assoc :entry params)))
          (entry (and entry (not (member entry '("no" "nil" "false")))))
+         (result-params (cdr (assoc :result-params params)))
+         (block-start (copy-marker (nth 5 (org-babel-get-src-block-info 'light))
+                                   t))
+         (tools-param (cdr (assoc :tools params)))
+         (session (cdr (assoc :session params)))
+         (prompt (cdr (assoc :prompt params)))
+         (model (ob-gptel-find-session-param :model params session))
+         (temperature (ob-gptel-find-session-param :temperature params session))
+         (max-tokens (ob-gptel-find-session-param :max-tokens params session))
+         (backend-name (ob-gptel-find-session-param :backend params session))
+         (system-message (ob-gptel-find-session-param :system params session))
+         (preset (ob-gptel-find-session-param :preset params session))
+         (context (ob-gptel-find-session-param :context params session))
+         (format (ob-gptel-find-session-param :format params session))
          (effective-body
           (if entry
               (let ((prefix
@@ -321,53 +340,68 @@ This function sends the BODY text to GPTel and returns the response."
          ;; so that presets / params have already taken effect.
          (resolved-model nil)
          (fsm
-          (ob-gptel--with-preset (and preset (intern-soft preset))
-				 (let ((gptel-model
-					(if model
-					    (if (symbolp model) model (intern model))
-					  gptel-model))
-				       (gptel-temperature
-					(if (and temperature (stringp temperature))
-					    (string-to-number temperature)
-					  gptel-temperature))
-				       (gptel-max-tokens
-					(if (and max-tokens (stringp max-tokens))
-					    (string-to-number max-tokens)
-					  gptel-max-tokens))
-				       (gptel--system-message
-					(or system-message
-					    gptel--system-message))
-				       (gptel-backend
-					(if backend-name
-					    (let ((backend (gptel-get-backend backend-name)))
-					      (if backend
-						  (setq-local gptel-backend backend)
-						gptel-backend))
-					  gptel-backend)))
-				   (setq resolved-model gptel-model)
-				   (gptel-request
-				    effective-body
-				    :callback
-				    (ob-gptel--make-callback
-				     ob-gptel--uuid buffer format cell)
-				    :buffer (current-buffer)
-				    :transforms (list #'gptel--transform-apply-preset
-						      (ob-gptel--add-context context))
-				    :system
-				    (cond (prompt
-					   (with-current-buffer buffer
-					     (ob-gptel-find-prompt prompt system-message)))
-					  (session
-					   (with-current-buffer buffer
-					     (ob-gptel-find-session session system-message))))
-				    :dry-run dry-run
-				    :stream nil)))))
+          (ob-gptel--with-preset
+              (and preset (intern-soft preset))
+            (let ((gptel-model
+                   (if model
+                       (if (symbolp model) model (intern model))
+                     gptel-model))
+                  (gptel-temperature
+                   (if temperature
+                       (if (stringp temperature)
+                           (string-to-number temperature)
+                         temperature)
+                     gptel-temperature))
+                  (gptel-max-tokens
+                   (if max-tokens
+                       (if (stringp max-tokens)
+                           (string-to-number max-tokens)
+                         max-tokens)
+                     gptel-max-tokens))
+                  (gptel--system-message
+                   (or system-message
+                       gptel--system-message))
+                  (gptel-backend
+                   (if backend-name
+                       (let ((backend (gptel-get-backend backend-name)))
+                         (if backend
+                             (setq-local gptel-backend backend)
+                           gptel-backend))
+                     gptel-backend))
+                  (gptel-tools
+                   (when tools-param
+                     (mapcar (lambda (tool-name)
+                               (or (gptel-get-tool tool-name)
+                                   (error "Tool %s not found" tool-name)))
+                             (if (stringp tools-param)
+                                 (split-string tools-param)
+                               tools-param)))))
+              (setq resolved-model gptel-model)
+              (gptel-request
+                  effective-body
+                :callback
+                (ob-gptel--make-callback
+                 buffer format cell block-start result-params)
+                :buffer (current-buffer)
+                :transforms (list #'gptel--transform-apply-preset
+                                  (ob-gptel--add-context context))
+                :system
+                (cond (prompt
+                       (with-current-buffer buffer
+                         (ob-gptel-find-prompt prompt system-message)))
+                      (session
+                       (goto-char block-start)
+                       (with-current-buffer buffer
+                         (ob-gptel-find-session session system-message)))
+                      (system-message system-message))
+                :dry-run dry-run
+                :stream nil)))))
     (if dry-run
         (thread-first
-         fsm
-         (gptel-fsm-info)
-         (plist-get :data)
-         (pp-to-string))
+          fsm
+          (gptel-fsm-info)
+          (plist-get :data)
+          (pp-to-string))
       ;; When `pending' is loaded, schedule a one-shot, buffer-local
       ;; hook to adopt the inserted UUID region as a placeholder once
       ;; org-babel has finished writing the result.
@@ -423,7 +457,8 @@ GPTel blocks don't use sessions, so this is a no-op."
                           ("prompt"  . "Include result of other block")
                           ("context" . "List of files to include")
                           ("entry"   . "Include preceding entry text")
-                          ("format"  . "Output format: markdown or org"))))
+                          ("format"  . "Output format: markdown or org")
+                          ("tools"   . "List of tool names to use"))))
               (list start end (all-completions word args)
                     :annotation-function #'(lambda (c) (cdr-safe (assoc c args)))
                     :exclusive 'no))
@@ -445,15 +480,22 @@ GPTel blocks don't use sessions, so this is a no-op."
                                 (lambda (m) (get (intern m) :description))))
                          ("preset" (cons gptel--known-presets
                                          (lambda (p) (thread-first
-                                                      (cdr (assq (intern p) gptel--known-presets))
-                                                      (plist-get :description)))))
+                                                       (cdr (assq (intern p) gptel--known-presets))
+                                                       (plist-get :description)))))
                          ("dry-run" (cons (list "t" "nil") (lambda (_) "" "Boolean")))
                          ("entry" (cons (list "t" "nil") (lambda (_) "" "Boolean")))
-                         ("format" (cons (list "markdown" "org") (lambda (_) "" "Output format"))))))
+                         ("format" (cons (list "markdown" "org") (lambda (_) "" "Output format")))
+                         ("tools" (cons (and (boundp 'gptel--known-tools)
+                                             (mapcar #'car gptel--known-tools))
+                                        (lambda (t-name)
+                                          (and (boundp 'gptel--known-tools)
+                                               (when-let ((tool (alist-get
+                                                                 (intern t-name)
+                                                                 gptel--known-tools)))
+                                                 (gptel-tool-description tool)))))))))
             (list start end (all-completions word (car comp-and-annotation))
                   :exclusive 'no
                   :annotation-function (cdr comp-and-annotation))))))))
-
 (add-to-list 'org-src-lang-modes '("gptel" . text))
 
 (provide 'ob-gptel)
