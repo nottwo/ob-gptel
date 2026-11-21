@@ -17,6 +17,7 @@ for documentation, exploration, and interactive workflows.
   - Dry-run mode to inspect API calls without sending them
   - Integration with Org's export and tangling features
   - Reusable prompts through named blocks
+  - Session-wide parameter inheritance (model, temperature, system, etc.)
   - Optional inclusion of the surrounding Org entry as context (=:entry t=)
 
 - Installation
@@ -178,19 +179,19 @@ What would this request look like?
 
 | Parameter    | Default    | Description                                          |
 |--------------+------------+------------------------------------------------------|
-| =:model=       | nil        | GPT model to use (e.g., =gpt-4=, =gpt-3.5-turbo=)        |
-| =:temperature= | nil        | Sampling temperature (0.0-2.0)                       |
-| =:max-tokens=  | nil        | Maximum tokens in response                           |
-| =:system=      | nil        | System message to set context                        |
+| =:model=       | nil        | GPT model to use (e.g., =gpt-4=, =gpt-3.5-turbo=). Inherits from session. |
+| =:temperature= | nil        | Sampling temperature (0.0-2.0). Inherits from session. |
+| =:max-tokens=  | nil        | Maximum tokens in response. Inherits from session.   |
+| =:system=      | nil        | System message. Inherits from session.               |
 | =:stream=      | nil        | Enable streaming responses                           |
-| =:backend=     | nil        | gptel backend to use                                 |
+| =:backend=     | nil        | gptel backend. Inherits from session.                |
 | =:dry-run=     | nil        | Show request without sending (=yes= to enable)         |
-| =:context=     | nil        | Additional context for the query                     |
+| =:context=     | nil        | Additional context for the query. Inherits from session. |
 | =:entry=       | nil        | Prepend preceding entry prose to the body            |
 | =:prompt=      | nil        | Name of a previous block to use as conversation base |
-| =:session=     | nil        | Session name of blocks to use as conversation base   |
-| =:preset=      | nil        | Name of preset to use                                |
-| =:format=      | "markdown" | Output format: "markdown" or "org"                   |
+| =:session=     | nil        | Session name. Params inherit across blocks.          |
+| =:preset=      | nil        | Name of preset to use. Inherits from session.        |
+| =:format=      | "markdown" | Output format. Inherits from session.                |
 | =:tools=       | nil        | Space-separated list of tool names to enable         |
 | =:results=     | "replace"  | How to handle results (standard Org babel)           |
 | =:exports=     | "both"     | What to export (standard Org babel)                  |
@@ -241,6 +242,39 @@ Help me start a short story about a time traveler.
 Continue the story with an unexpected twist.
 ,#+end_src
 #+end_src
+
+**** Session parameters
+
+Parameters such as =:model=, =:temperature=, =:max-tokens=, =:system=,
+=:preset=, =:backend=, =:context=, and =:format= can be set in an earlier
+block and are inherited by subsequent blocks in the same session. The
+latest value in the session is used. A block can override an inherited
+parameter locally:
+
+#+begin_src org
+,#+begin_src gptel :session research :model claude :temperature 0.3
+Explain the concept of entropy.
+,#+end_src
+
+,#+RESULTS: research
+: Entropy is a measure of disorder in a system.
+
+,#+begin_src gptel :session research
+How does it relate to information theory?
+,#+end_src
+
+,#+RESULTS: research
+: Entropy measures the uncertainty or information content of a distribution.
+
+,#+begin_src gptel :session research :model gpt-4 :temperature 0.8
+Give me a creative analogy.
+,#+end_src
+#+end_src
+
+In the example above, the first block sets =:model claude= and
+=:temperature 0.3=. The second block inherits those settings. The third
+block overrides both parameters locally with =:model gpt-4= and
+=:temperature 0.8=.
 
 **** Using explicit back-references
 
