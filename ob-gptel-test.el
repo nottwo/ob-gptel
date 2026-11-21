@@ -64,14 +64,14 @@
 (ert-deftest ob-gptel-test-default-args-nil-keys ()
   "Test that optional parameters default to nil."
   (dolist (key '(:model :temperature :max-tokens :system :backend
-                 :dry-run :preset :context :prompt :session))
+                 :dry-run :preset :context :prompt :session :branch))
     (should-not (cdr (assoc key org-babel-default-header-args:gptel)))))
 
 (ert-deftest ob-gptel-test-default-args-completeness ()
   "Test that all expected header args are present."
   (let ((expected-keys '(:results :exports :model :temperature :max-tokens
                          :system :backend :dry-run :preset :context
-                         :prompt :session :format)))
+                         :prompt :session :branch :format)))
     (dolist (key expected-keys)
       (should (assoc key org-babel-default-header-args:gptel)))))
 
@@ -554,6 +554,179 @@
       (let ((blocks (ob-gptel--all-source-blocks "sess")))
         (should (= (length blocks) 1))
         (should (equal (plist-get (car blocks) :body) "Before point"))))))
+
+;;; ob-gptel--collect-blocks tests (branch-aware collection)
+
+(ert-deftest ob-gptel-test-collect-blocks-branch-excluded-from-parent ()
+  "T1: A `:branch' block is excluded from its parent session."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src gptel :session research\n")
+    (insert "A\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session research :branch counter\n")
+    (insert "B\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let ((blocks (ob-gptel--collect-blocks "research" (point-max))))
+      (should (= (length blocks) 1))
+      (should (equal (plist-get (car blocks) :body) "A")))))
+
+(ert-deftest ob-gptel-test-collect-blocks-branch-inherits-parent ()
+  "T2: A branch session collects the parent blocks, then the entry block."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src gptel :session research\n")
+    (insert "A\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session research :branch counter\n")
+    (insert "B\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session counter\n")
+    (insert "C\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let ((blocks (ob-gptel--collect-blocks "counter" (point-max))))
+      (should (= (length blocks) 3))
+      (should (equal (plist-get (nth 0 blocks) :body) "A"))
+      (should (equal (plist-get (nth 1 blocks) :body) "B"))
+      (should (equal (plist-get (nth 2 blocks) :body) "C"))
+      ;; The entry block records where its result is written.
+      (should (equal (plist-get (nth 1 blocks) :branch) "counter"))
+      ;; The parent block records no branch.
+      (should (null (plist-get (nth 0 blocks) :branch))))))
+
+(ert-deftest ob-gptel-test-collect-blocks-branches-isolated ()
+  "T3: Sibling branches each see only their own entry block."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src gptel :session topic\n")
+    (insert "A\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session topic :branch creative\n")
+    (insert "B\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session topic :branch pragmatic\n")
+    (insert "C\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session creative\n")
+    (insert "D\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session pragmatic\n")
+    (insert "E\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let ((creative (ob-gptel--collect-blocks "creative" (point-max)))
+          (pragmatic (ob-gptel--collect-blocks "pragmatic" (point-max))))
+      (should (= (length creative) 3))
+      (should (equal (plist-get (nth 0 creative) :body) "A"))
+      (should (equal (plist-get (nth 1 creative) :body) "B"))
+      (should (equal (plist-get (nth 2 creative) :body) "D"))
+      (should (= (length pragmatic) 3))
+      (should (equal (plist-get (nth 0 pragmatic) :body) "A"))
+      (should (equal (plist-get (nth 1 pragmatic) :body) "C"))
+      (should (equal (plist-get (nth 2 pragmatic) :body) "E")))))
+
+(ert-deftest ob-gptel-test-collect-blocks-parent-blind-to-branches ()
+  "T4: The parent session skips all of its diverging branch blocks."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src gptel :session research\n")
+    (insert "A\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session research\n")
+    (insert "B\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session research :branch branch1\n")
+    (insert "B1\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session research\n")
+    (insert "D\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let ((blocks (ob-gptel--collect-blocks "research" (point-max))))
+      (should (= (length blocks) 3))
+      (should (equal (plist-get (nth 0 blocks) :body) "A"))
+      (should (equal (plist-get (nth 1 blocks) :body) "B"))
+      (should (equal (plist-get (nth 2 blocks) :body) "D")))))
+
+(ert-deftest ob-gptel-test-collect-blocks-chained-branches ()
+  "T5: A branch of a branch collects the full ancestor chain."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src gptel :session research\n")
+    (insert "A\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session research :branch counter\n")
+    (insert "B\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session counter :branch extreme\n")
+    (insert "C\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session extreme\n")
+    (insert "D\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let ((blocks (ob-gptel--collect-blocks "extreme" (point-max))))
+      (should (= (length blocks) 4))
+      (should (equal (plist-get (nth 0 blocks) :body) "A"))
+      (should (equal (plist-get (nth 1 blocks) :body) "B"))
+      (should (equal (plist-get (nth 2 blocks) :body) "C"))
+      (should (equal (plist-get (nth 3 blocks) :body) "D"))
+      ;; Each entry block records its target branch.
+      (should (equal (plist-get (nth 1 blocks) :branch) "counter"))
+      (should (equal (plist-get (nth 2 blocks) :branch) "extreme")))))
+
+(ert-deftest ob-gptel-test-collect-blocks-branch-without-session ()
+  "T12: A `:branch' block without `:session' is its own session."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src gptel :branch lonely\n")
+    (insert "Solo\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let ((blocks (ob-gptel--collect-blocks "lonely" (point-max))))
+      (should (= (length blocks) 1))
+      (should (equal (plist-get (car blocks) :body) "Solo")))))
+
+(ert-deftest ob-gptel-test-collect-blocks-empty-ancestor-chain ()
+  "T13: A branch entry as the first block yields just itself."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src gptel :session research :branch counter\n")
+    (insert "B\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session counter\n")
+    (insert "C\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let ((blocks (ob-gptel--collect-blocks "counter" (point-max))))
+      (should (= (length blocks) 2))
+      (should (equal (plist-get (nth 0 blocks) :body) "B"))
+      (should (equal (plist-get (nth 1 blocks) :body) "C")))))
+
+(ert-deftest ob-gptel-test-collect-blocks-after-branch-point ()
+  "T14: Parent keeps post-branch blocks; branch excludes them."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src gptel :session research\n")
+    (insert "A\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session research :branch counter\n")
+    (insert "B\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session research\n")
+    (insert "D\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let ((research (ob-gptel--collect-blocks "research" (point-max)))
+          (counter (ob-gptel--collect-blocks "counter" (point-max))))
+      (should (= (length research) 2))
+      (should (equal (plist-get (nth 0 research) :body) "A"))
+      (should (equal (plist-get (nth 1 research) :body) "D"))
+      (should (= (length counter) 2))
+      (should (equal (plist-get (nth 0 counter) :body) "A"))
+      (should (equal (plist-get (nth 1 counter) :body) "B")))))
 
 ;;; ob-gptel-find-session-param tests
 

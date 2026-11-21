@@ -63,6 +63,7 @@
     (:context . nil)
     (:prompt . nil)
     (:session . nil)
+    (:branch . nil)
     (:entry . nil)
     (:format . "org")
     (:tools . nil))  "Default header arguments for gptel source blocks.")
@@ -89,39 +90,68 @@ and the result in the ASSISTANT role."
                   (nconc directives (list (org-babel-read-result))))))))))
     directives))
 
-(defun ob-gptel--all-source-blocks (session)
-  "Return all Source blocks before point with `:session' set to SESSION."
-  (org-element-map
-      (save-restriction
-        (narrow-to-region (point-min) (point))
-        (org-element-parse-buffer))
-      '(src-block fixed-width)
-    (lambda (element)
-      (cond ((eq (org-element-type element) 'src-block)
-             (let ((start
-                    (org-element-property :begin element))
-                   (language
-                    (when (org-element-property :language element)
-                      (string-trim (org-element-property :language element))))
+(defun ob-gptel--collect-blocks (session point)
+  "Collect gptel source blocks for SESSION before POINT.
+A block whose `:branch' argument equals SESSION is a branch entry point:
+it is included together with the ancestor blocks collected by recursing
+into the block's `:session' (the parent), bounded by the entry block's
+position.  A block whose `:session' equals SESSION but whose `:branch'
+points elsewhere is excluded, because its result lives in the branch, not
+in SESSION.
+
+Returns a list of block-info property lists in document order, each with
+keys `:start', `:language', `:parameters', `:body', `:result', and
+`:branch'."
+  (let ((collected '()))
+    (save-restriction
+      (narrow-to-region (point-min) point)
+      (org-element-map (org-element-parse-buffer)
+          '(src-block fixed-width)
+        (lambda (element)
+          (when (eq (org-element-type element) 'src-block)
+            (let* ((start (org-element-property :begin element))
                    (parameters
                     (when (org-element-property :parameters element)
                       (org-babel-parse-header-arguments
-                       (string-trim (org-element-property :parameters element))))))
-               (and (<= start (point))
-                    (equal session (cdr (assq :session parameters)))
-                    (list :start start
-                          :language language
-                          :parameters parameters
-                          :body
-                          (when (org-element-property :value element)
-                            (string-trim (org-element-property :value element)))
-                          :result
-                          (save-excursion
-                            (save-restriction
-                              (goto-char (org-element-property :begin element))
-                              (when (org-babel-where-is-src-block-result)
-                                (goto-char (org-babel-where-is-src-block-result))
-                                (org-babel-read-result))))))))))))
+                       (string-trim (org-element-property :parameters element)))))
+                   (block-session (cdr (assq :session parameters)))
+                   (block-branch (cdr (assq :branch parameters)))
+                   (entry-p (and block-branch (equal block-branch session)))
+                   (member-p (and (not entry-p)
+                                  (equal block-session session)
+                                  (not block-branch))))
+              (when (and start (<= start point) (or entry-p member-p))
+                (let ((info
+                       (list :start start
+                             :language
+                             (when (org-element-property :language element)
+                               (string-trim (org-element-property :language element)))
+                             :parameters parameters
+                             :body
+                             (when (org-element-property :value element)
+                               (string-trim (org-element-property :value element)))
+                             :result
+                             (save-excursion
+                               (save-restriction
+                                 (goto-char (org-element-property :begin element))
+                                 (when (org-babel-where-is-src-block-result)
+                                   (goto-char (org-babel-where-is-src-block-result))
+                                   (org-babel-read-result))))
+                             :branch block-branch)))
+                  (setq collected
+                        (nconc collected
+                               (and entry-p block-session
+                                    (ob-gptel--collect-blocks block-session start))
+                               (list info)))))))))
+      collected)))
+
+(defun ob-gptel--all-source-blocks (session)
+  "Return all Source blocks before point belonging to SESSION.
+A block whose `:branch' argument equals SESSION is a branch entry
+point and is included together with its parent session's ancestor
+blocks, which `ob-gptel--collect-blocks' gathers via recursion.  See
+that function for details."
+  (ob-gptel--collect-blocks session (point)))
 
 (defun ob-gptel-find-session-param (param params session)
   "Look for PARAM in PARAMS and return it if found.
@@ -315,6 +345,7 @@ This function sends the BODY text to GPTel and returns the response."
                                    t))
          (tools-param (cdr (assoc :tools params)))
          (session (cdr (assoc :session params)))
+         (branch (cdr (assoc :branch params)))
          (prompt (cdr (assoc :prompt params)))
          (model (ob-gptel-find-session-param :model params session))
          (temperature (ob-gptel-find-session-param :temperature params session))
@@ -342,6 +373,9 @@ This function sends the BODY text to GPTel and returns the response."
          (fsm
           (ob-gptel--with-preset
               (and preset (intern-soft preset))
+            (when (and branch session (equal branch session))
+              (error ":branch (%S) must not equal :session (%S)"
+                     branch session))
             (let ((gptel-model
                    (if model
                        (if (symbolp model) model (intern model))
@@ -456,6 +490,8 @@ GPTel blocks don't use sessions, so this is a no-op."
                           ("system"  . "System message for request")
                           ("prompt"  . "Include result of other block")
                           ("context" . "List of files to include")
+                          ("session" . "Session id linking earlier blocks")
+                          ("branch"  . "Write result to a named branch session (reads from :session)")
                           ("entry"   . "Include preceding entry text")
                           ("format"  . "Output format: markdown or org")
                           ("tools"   . "List of tool names to use"))))

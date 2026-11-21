@@ -160,6 +160,45 @@ In the example above, the first block sets `:model claude` and
 block overrides both parameters locally with `:model gpt-4` and
 `:temperature 0.8`.
 
+#### Branching sessions
+
+A `:branch` header creates a divergent conversation that reads from a
+parent session's history but does not pollute it. Branches inherit all
+parent blocks as context, can override session parameters, and are
+isolated from sibling branches:
+
+```org
+#+begin_src gptel :session research
+Propose a solution to climate change.
+#+end_src
+
+#+RESULTS: research
+We should reduce carbon emissions and adopt renewable energy.
+
+#+begin_src gptel :session research :branch optimistic
+Give a more optimistic outlook.
+#+end_src
+
+#+RESULTS: optimistic
+Technology will solve the problem through innovation and clean energy breakthroughs.
+
+#+begin_src gptel :session research :branch pessimistic
+Now give a more pessimistic outlook.
+#+end_src
+
+#+RESULTS: pessimistic
+It may be too late to prevent catastrophic warming.
+
+#+begin_src gptel :session research
+Which solution should we prioritize?
+#+end_src
+```
+
+The final block reads from the parent `:session research` only -- it
+sees the original block but not the `:optimistic` or `:pessimistic`
+branches. Branches can also be chained (a branch of a branch),
+forming an ancestor chain that is fully inherited.
+
 ### Summarizing the surrounding entry
 
 `:entry t` prepends the prose preceding the block — from the start of
@@ -231,6 +270,7 @@ find /tmp -type f -links +1
 | `:preset`      | nil         | gptel preset name. Inherits from session.  |
 | `:prompt`      | nil         | Named block for conversation context       |
 | `:session`     | nil         | Session name for multi-turn conversations. Params inherit across blocks. |
+| `:branch`      | nil         | Name for a branch session (reads from `:session`). Inherited params overridable. |
 | `:context`     | nil         | Files to include as context. Inherits from session. |
 | `:entry`       | nil         | Prepend preceding entry prose to the body  |
 | `:format`      | `"org"`     | Output format: `"markdown"` or `"org"`. Inherits from session. |
