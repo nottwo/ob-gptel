@@ -683,6 +683,63 @@
       (should (= captured-max-tokens 200))
       (should (member "sys-msg" captured-system)))))
 
+(ert-deftest ob-gptel-test-execute-direct-overrides-inherited-session-params ()
+  "Executor applies inherited params from session history.
+Parameters set directly on the block override inherited params."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src gptel :session test-sess :model inherited-model :temperature 0.8 :max-tokens 200 :system sys-msg\n")
+    (insert "first\n")
+    (insert "#+end_src\n\n")
+    (insert "#+begin_src gptel :session test-sess :model direct-model :max-tokens 242 :system direct-sys\n")
+    (insert "question\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let* ((info (org-babel-get-src-block-info))
+           (body (nth 1 info))
+           (params (nth 2 info))
+           captured-model
+           captured-temperature
+           captured-max-tokens
+           captured-system)
+      (cl-letf (((symbol-function 'gptel-request)
+                 (lambda (_prompt &rest args)
+                   (setq captured-model gptel-model)
+                   (setq captured-temperature gptel-temperature)
+                   (setq captured-max-tokens gptel-max-tokens)
+                   (setq captured-system (plist-get args :system))
+                   'fake-fsm))
+                ((symbol-function 'org-id-uuid)
+                 (lambda () "test-uuid")))
+        (should (equal (org-babel-execute:gptel body params)
+                       "<gptel_thinking_test-uuid>")))
+      (should (equal captured-model 'direct-model))
+      (should (= captured-temperature 0.8))
+      (should (= captured-max-tokens 242))
+      (should (member "direct-sys" captured-system)))))
+
+(ert-deftest ob-gptel-test-execute-accepts-numeric-temperature ()
+  "A numeric :temperature on the block is accepted."
+  (with-temp-buffer
+    (org-mode)
+    (insert "#+begin_src gptel :temperature 0.9\n")
+    (insert "first\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let* ((info (org-babel-get-src-block-info))
+           (body (nth 1 info))
+           (params (nth 2 info))
+           captured-temperature)
+      (cl-letf (((symbol-function 'gptel-request)
+                 (lambda (_prompt &rest args)
+                   (setq captured-temperature gptel-temperature)
+                   'fake-fsm))
+                ((symbol-function 'org-id-uuid)
+                 (lambda () "test-uuid")))
+        (should (equal (org-babel-execute:gptel body params)
+                       "<gptel_thinking_test-uuid>")))
+      (should (= captured-temperature 0.9)))))
+
 (ert-deftest ob-gptel-test-execute-does-not-inherit-tools ()
   ":tools should not be inherited from prior session blocks."
   (with-temp-buffer
