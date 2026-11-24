@@ -149,9 +149,18 @@ keys `:start', `:language', `:parameters', `:body', `:result', and
   "Return all Source blocks before point belonging to SESSION.
 A block whose `:branch' argument equals SESSION is a branch entry
 point and is included together with its parent session's ancestor
-blocks, which `ob-gptel--collect-blocks' gathers via recursion.  See
-that function for details."
-  (ob-gptel--collect-blocks session (point)))
+blocks, which `ob-gptel--collect-blocks' gathers via recursion.
+Blocks are returned in document order (sorted by `:start'),
+deduplicated so that a block collected via multiple entry points
+appears only once.  See `ob-gptel--collect-blocks' for details."
+  (let* ((blocks (ob-gptel--collect-blocks session (point)))
+         (sorted (sort blocks (lambda (a b)
+                                (< (plist-get a :start)
+                                   (plist-get b :start))))))
+    (cl-remove-duplicates sorted
+                          :test (lambda (a b)
+                                  (equal (plist-get a :start)
+                                         (plist-get b :start))))))
 
 (defun ob-gptel-find-session-param (param params session)
   "Look for PARAM in PARAMS and return it if found.

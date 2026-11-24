@@ -728,6 +728,109 @@
       (should (equal (plist-get (nth 0 counter) :body) "A"))
       (should (equal (plist-get (nth 1 counter) :body) "B")))))
 
+
+(ert-deftest ob-gptel-test-collect-blocks-repeated-entry-point ()
+  "T15: Multiple branch entry points for the same branch, with
+interleaved session blocks in between.  Also demonstrates that
+unrelated sessions are excluded.  Duplicate parent blocks are
+deduplicated, so A1 appears only once."
+  (with-temp-buffer
+    (org-mode)
+    ;; 1: parent block
+    (insert "#+begin_src gptel :session A\n")
+    (insert "A1\n")
+    (insert "#+end_src\n\n")
+    ;; 2: first entry point for branch B
+    (insert "#+begin_src gptel :session A :branch B\n")
+    (insert "B1\n")
+    (insert "#+end_src\n\n")
+    ;; 3: parent block after first branch point
+    (insert "#+begin_src gptel :session A\n")
+    (insert "A2\n")
+    (insert "#+end_src\n\n")
+    ;; 3.5: unrelated session C (should be excluded)
+    (insert "#+begin_src gptel :session C\n")
+    (insert "C1\n")
+    (insert "#+end_src\n\n")
+    ;; 4: direct block in session B
+    (insert "#+begin_src gptel :session B\n")
+    (insert "B2\n")
+    (insert "#+end_src\n\n")
+    ;; 5: parent block after B2
+    (insert "#+begin_src gptel :session A\n")
+    (insert "A3\n")
+    (insert "#+end_src\n\n")
+    ;; 6: second entry point for branch B
+    (insert "#+begin_src gptel :session A :branch B\n")
+    (insert "B3\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let ((blocks (ob-gptel--all-source-blocks "B")))
+      ;; Expected 6 blocks: A1, B1, A2, B2, A3, B3 (deduplicated)
+      ;; Without dedup: A1, B1, B2, A1, A2, A3, B3 (7 blocks, A1 twice)
+      ;; C1 from session C must NOT appear -- unrelated sessions excluded.
+      (should (= (length blocks) 6))
+      (should (equal (plist-get (nth 0 blocks) :body) "A1"))
+      (should (equal (plist-get (nth 1 blocks) :body) "B1"))
+      (should (equal (plist-get (nth 1 blocks) :branch) "B"))
+      (should (equal (plist-get (nth 2 blocks) :body) "A2"))
+      (should (null (plist-get (nth 2 blocks) :branch)))
+      (should (equal (plist-get (nth 3 blocks) :body) "B2"))
+      (should (null (plist-get (nth 3 blocks) :branch)))
+      (should (equal (plist-get (nth 4 blocks) :body) "A3"))
+      (should (equal (plist-get (nth 5 blocks) :body) "B3"))
+      (should (equal (plist-get (nth 5 blocks) :branch) "B")))))
+
+(ert-deftest ob-gptel-test-collect-blocks-reused-entry-point ()
+  "T16: Reusing the same branch name for entry points of different sessions.
+`ob-gptel--all-source-blocks` returns blocks in document order (sorted
+by `:start'), even though internal recursion can interleave parent
+blocks from earlier positions."
+  (with-temp-buffer
+    (org-mode)
+    ;; 1: parent block
+    (insert "#+begin_src gptel :session A\n")
+    (insert "A1\n")
+    (insert "#+end_src\n\n")
+    ;; 2: first entry point for branch B
+    (insert "#+begin_src gptel :session A :branch B\n")
+    (insert "B1\n")
+    (insert "#+end_src\n\n")
+    ;; 3: parent block after first branch point
+    (insert "#+begin_src gptel :session A\n")
+    (insert "A2\n")
+    (insert "#+end_src\n\n")
+    ;; 4: unrelated session C (excluded from B's collection)
+    (insert "#+begin_src gptel :session C\n")
+    (insert "C1\n")
+    (insert "#+end_src\n\n")
+    ;; 5: direct block in session B
+    (insert "#+begin_src gptel :session B\n")
+    (insert "B2\n")
+    (insert "#+end_src\n\n")
+    ;; 6: parent block after B2
+    (insert "#+begin_src gptel :session A\n")
+    (insert "A3\n")
+    (insert "#+end_src\n\n")
+    ;; 7: second entry point for branch B (from session C)
+    (insert "#+begin_src gptel :session C :branch B\n")
+    (insert "B3\n")
+    (insert "#+end_src\n")
+    (goto-char (point-max))
+    (let ((blocks (ob-gptel--all-source-blocks "B")))
+      ;; Document order: A1, B1, C1, B2, B3
+      ;; C1 (doc pos 4) comes before B2 (doc pos 5)
+      (should (= (length blocks) 5))
+      (should (equal (plist-get (nth 0 blocks) :body) "A1"))
+      (should (equal (plist-get (nth 1 blocks) :body) "B1"))
+      (should (equal (plist-get (nth 1 blocks) :branch) "B"))
+      (should (equal (plist-get (nth 2 blocks) :body) "C1"))
+      (should (null (plist-get (nth 2 blocks) :branch)))
+      (should (equal (plist-get (nth 3 blocks) :body) "B2"))
+      (should (null (plist-get (nth 3 blocks) :branch)))
+      (should (equal (plist-get (nth 4 blocks) :body) "B3"))
+      (should (equal (plist-get (nth 4 blocks) :branch) "B")))))
+
 ;;; ob-gptel-find-session-param tests
 
 (ert-deftest ob-gptel-test-find-session-param-block-override ()
