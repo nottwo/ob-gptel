@@ -127,6 +127,39 @@ What about its history?
 #+end_src
 ```
 
+#### Session parameters
+
+Parameters such as `:model`, `:temperature`, `:max-tokens`, `:system`,
+`:preset`, `:backend`, `:context`, and `:format` can be set in an
+earlier block and are inherited by subsequent blocks in the same
+session. The latest value in the session is used. A block can override
+an inherited parameter locally:
+
+```org
+#+begin_src gptel :session research :model claude :temperature 0.3
+Explain the concept of entropy.
+#+end_src
+
+#+RESULTS: research
+Entropy is a measure of disorder in a system.
+
+#+begin_src gptel :session research
+How does it relate to information theory?
+#+end_src
+
+#+RESULTS: research
+Entropy measures the uncertainty or information content of a distribution.
+
+#+begin_src gptel :session research :model gpt-4 :temperature 0.8
+Give me a creative analogy.
+#+end_src
+```
+
+In the example above, the first block sets `:model claude` and
+`:temperature 0.3`. The second block inherits those settings. The third
+block overrides both parameters locally with `:model gpt-4` and
+`:temperature 0.8`.
+
 ### Summarizing the surrounding entry
 
 `:entry t` prepends the prose preceding the block — from the start of
@@ -190,17 +223,17 @@ find /tmp -type f -links +1
 
 | Argument       | Default     | Description                                |
 |----------------|-------------|--------------------------------------------|
-| `:model`       | nil         | Model to use (e.g., `gpt-4`)              |
-| `:temperature` | nil         | Sampling temperature (0.0--2.0)            |
-| `:max-tokens`  | nil         | Maximum tokens in response                 |
-| `:system`      | nil         | System message                             |
-| `:backend`     | nil         | gptel backend name                         |
-| `:preset`      | nil         | gptel preset name                          |
+| `:model`       | nil         | Model to use (e.g., `gpt-4`). Inherits from session. |
+| `:temperature` | nil         | Sampling temperature (0.0--2.0). Inherits from session. |
+| `:max-tokens`  | nil         | Maximum tokens in response. Inherits from session. |
+| `:system`      | nil         | System message. Inherits from session.     |
+| `:backend`     | nil         | gptel backend name. Inherits from session. |
+| `:preset`      | nil         | gptel preset name. Inherits from session.  |
 | `:prompt`      | nil         | Named block for conversation context       |
-| `:session`     | nil         | Session name for multi-turn conversations  |
-| `:context`     | nil         | Files to include as context                |
+| `:session`     | nil         | Session name for multi-turn conversations. Params inherit across blocks. |
+| `:context`     | nil         | Files to include as context. Inherits from session. |
 | `:entry`       | nil         | Prepend preceding entry prose to the body  |
-| `:format`      | `"org"`     | Output format: `"markdown"` or `"org"`     |
+| `:format`      | `"org"`     | Output format: `"markdown"` or `"org"`. Inherits from session. |
 | `:dry-run`     | nil         | Inspect payload without sending            |
 | `:results`     | `"replace"` | Standard Org Babel results handling        |
 | `:exports`     | `"both"`    | Standard Org Babel export control          |
